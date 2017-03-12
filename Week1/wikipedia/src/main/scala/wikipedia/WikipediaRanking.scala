@@ -19,6 +19,9 @@ object WikipediaRanking {
   // Hint: use a combination of `sc.textFile`, `WikipediaData.filePath` and `WikipediaData.parse`
   val wikiRdd: RDD[WikipediaArticle] = sc.textFile(WikipediaData.filePath).map(WikipediaData.parse).cache()
 
+  def helper(lang: String, text: String): Boolean =
+    text.contains(" " + lang + " ") || text.startsWith(lang + " ")
+
   /** Returns the number of articles on which the language `lang` occurs.
    *  Hint1: consider using method `aggregate` on RDD[T].
    *  Hint2: should you count the "Java" language when you see "JavaScript"?
@@ -26,7 +29,7 @@ object WikipediaRanking {
    *  Hint4: no need to search in the title :)
    */
   def occurrencesOfLang(lang: String, rdd: RDD[WikipediaArticle]): Int =
-    rdd.aggregate(0)((rank, article) => if (article.text.contains(" " + lang + " ")) rank + 1 else rank, _ + _)
+    rdd.aggregate(0)((rank, article) => if (helper(lang, article.text)) rank + 1 else rank, _ + _)
 
   /* (1) Use `occurrencesOfLang` to compute the ranking of the languages
    *     (`val langs`) by determining the number of Wikipedia articles that
@@ -50,7 +53,7 @@ object WikipediaRanking {
     (for {
       article <- rdd
       lang <- langs
-      if article.text.contains(" " + lang + " ")
+      if helper(lang, article.text)
     } yield lang -> article).groupByKey()
 
 
@@ -77,7 +80,7 @@ object WikipediaRanking {
     (for {
       article <- rdd
       lang <- langs
-      if article.text.contains(" " + lang + " ")
+      if helper(lang, article.text)
     } yield lang -> 1).reduceByKey(_ + _).sortBy(a => a._2, ascending = false).collect().toList
 
 
