@@ -7,6 +7,16 @@ import org.apache.spark.rdd.RDD
 import annotation.tailrec
 import scala.reflect.ClassTag
 
+/**
+  * Do you think that partitioning your data would help?
+  * Have you thought about persisting some of your data?
+  * Can you think of why persisting your data in memory may be helpful for this algorithm?
+  * Of the non-empty clusters, how many clusters have "Java" as their label
+  * (based on the majority of questions, see above)? Why?
+  * Only considering the "Java clusters", which clusters stand out and why?
+  * How are the "C# clusters" different compared to the "Java clusters"?
+  */
+
 /** A raw stackoverflow posting, either a question or an answer */
 case class Posting(postingType: Int, id: Int, acceptedAnswer: Option[Int], parentId: Option[Int], score: Int, tags: Option[String]) extends Serializable
 
@@ -14,7 +24,7 @@ case class Posting(postingType: Int, id: Int, acceptedAnswer: Option[Int], paren
 /** The main class */
 object StackOverflow extends StackOverflow {
 
-  @transient lazy val conf: SparkConf = new SparkConf().setMaster("local").setAppName("StackOverflow")
+  @transient lazy val conf: SparkConf = new SparkConf().setMaster("local[4]").setAppName("StackOverflow")
   @transient lazy val sc: SparkContext = new SparkContext(conf)
 
   /** Main function */
@@ -63,7 +73,28 @@ class StackOverflow extends Serializable {
   //
   //
 
-  /** Load postings from the given file */
+  /**
+    * Load postings from the given file
+    <postTypeId>:     Type of the post. Type 1 = question,
+                      type 2 = answer.
+
+    <id>:             Unique id of the post (regardless of type).
+
+    <acceptedAnswer>: Id of the accepted answer post. This
+                      information is optional, so maybe be missing
+                      indicated by an empty string.
+
+    <parentId>:       For an answer: id of the corresponding
+                      question. For a question:missing, indicated
+                      by an empty string.
+
+    <score>:          The StackOverflow score (based on user
+                      votes).
+
+    <tag>:            The tag indicates the programming language
+                      that the post is about, in case it's a
+                      question, or missing in case it's an answer.
+    */
   def rawPostings(lines: RDD[String]): RDD[Posting] =
     lines.map(line => {
       val arr = line.split(",")
@@ -76,9 +107,32 @@ class StackOverflow extends Serializable {
     })
 
 
-  /** Group the questions and answers together */
+  /**
+    * Ideally, we want to obtain an RDD with the pairs of (𝚀𝚞𝚎𝚜𝚝𝚒𝚘𝚗, 𝙸𝚝𝚎𝚛𝚊𝚋𝚕𝚎[𝙰𝚗𝚜𝚠𝚎𝚛]).
+    * However, grouping on the question directly is expensive (can you imagine why?),
+    * so a better alternative is to match on the QID,
+    * thus producing an 𝚁𝙳𝙳[(𝚀𝙸𝙳, 𝙸𝚝𝚎𝚛𝚊𝚋𝚕𝚎[(𝚀𝚞𝚎𝚜𝚝𝚒𝚘𝚗, 𝙰𝚗𝚜𝚠𝚎𝚛))].
+    *
+    * To obtain this, in the 𝚐𝚛𝚘𝚞𝚙𝚎𝚍𝙿𝚘𝚜𝚝𝚒𝚗𝚐𝚜 method, first filter the questions and answers
+    * separately and then prepare them for a join operation by extracting the QID value
+    * in the first element of a tuple. Then, use one of the 𝚓𝚘𝚒𝚗 operations (which one?)
+    * to obtain an 𝚁𝙳𝙳[(𝚀𝙸𝙳, (𝚀𝚞𝚎𝚜𝚝𝚒𝚘𝚗, 𝙰𝚗𝚜𝚠𝚎𝚛))]. Then, the last step is to obtain
+    * an 𝚁𝙳𝙳[(𝚀𝙸𝙳, 𝙸𝚝𝚎𝚛𝚊𝚋𝚕𝚎[(𝚀𝚞𝚎𝚜𝚝𝚒𝚘𝚗, 𝙰𝚗𝚜𝚠𝚎𝚛)])]. How can you do that, what method do
+    * you use to group by the key of a pair RDD?
+    * Finally, in the description we made QID, Question and Answer separate types,
+    * but in the implementation QID is an 𝙸𝚗𝚝 and both questions and answers are of type 𝙿𝚘𝚜𝚝𝚒𝚗𝚐.
+    * Therefore, the signature of 𝚐𝚛𝚘𝚞𝚙𝚎𝚍𝙿𝚘𝚜𝚝𝚒𝚗𝚐𝚜 is:
+
+    def groupedPostings(postings: RDD[/* Question or Answer */ Posting]):
+        RDD[(/*QID*/ Int, Iterable[(/*Question*/ Posting, /*Answer*/ Posting)])]
+
+    * Group the questions and answers together */
   def groupedPostings(postings: RDD[Posting]): RDD[(Int, Iterable[(Posting, Posting)])] = {
-    ???
+    val questions = postings.filter(posting => posting.postingType == 1).map(posting => (posting.id, posting))
+    val answers = postings.filter(posting => posting.postingType == 2).map(posting => (posting.parentId.get, posting))
+
+    val qaPair = questions.join(answers)
+    qaPair.groupByKey()
   }
 
 
@@ -97,7 +151,8 @@ class StackOverflow extends Serializable {
       highScore
     }
 
-    ???
+    // (question, high score)
+    grouped.map(qaPair => (qaPair._2.head._1, answerHighScore(qaPair._2.map(x => x._2).toArray)))
   }
 
 
@@ -116,8 +171,8 @@ class StackOverflow extends Serializable {
         }
       }
     }
-
-    ???
+    // (language, score)
+    scored.map(score => (firstLangInTag(score._1.tags, langs).get * langSpread, score._2))
   }
 
 
@@ -172,7 +227,12 @@ class StackOverflow extends Serializable {
 
   /** Main kmeans computation */
   @tailrec final def kmeans(means: Array[(Int, Int)], vectors: RDD[(Int, Int)], iter: Int = 1, debug: Boolean = false): Array[(Int, Int)] = {
-    val newMeans = means.clone() // you need to compute newMeans
+    val closest = vectors.cache().groupBy(vector => findClosest(vector, means)).mapValues(averageVectors).collect()
+    val newMeans = means.clone()
+
+    for {
+      mean <- closest
+    } newMeans(mean._1) = mean._2
 
     // TODO: Fill in the newMeans array
     val distance = euclideanDistance(means, newMeans)
@@ -273,10 +333,16 @@ class StackOverflow extends Serializable {
     val closestGrouped = closest.groupByKey()
 
     val median = closestGrouped.mapValues { vs =>
-      val langLabel: String   = ??? // most common language in the cluster
-      val langPercent: Double = ??? // percent of the questions in the most common language
-      val clusterSize: Int    = ???
-      val medianScore: Int    = ???
+      // vs = Iterable[(language, score)]
+      // most common language in the cluster
+      val mostCommonLanguage = vs.groupBy(x => x._1).maxBy(x => x._2.size)
+      val langLabel: String   = langs(mostCommonLanguage._1 / langSpread)
+      val langPercent: Double = 100.0 * mostCommonLanguage._2.size / vs.size // percent of the questions in the most common language
+      val clusterSize: Int    = vs.size
+      val orderedVs = vs.toList.sortBy(x => x._2)
+      val medianScore: Int    =
+        if (vs.size%2 != 0) orderedVs(vs.size/2)._2
+        else (orderedVs(vs.size/2)._2 + orderedVs(vs.size/2 - 1)._2) / 2
 
       (langLabel, langPercent, clusterSize, medianScore)
     }
